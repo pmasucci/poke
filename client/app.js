@@ -1,22 +1,12 @@
-// Dependencies
+/*global URL,config*/
+
+/* dependencies */
 var $ = require('jquery');
 var io = require('socket.io-client');
 var blobToImage = require('./blob');
-var chat = require('./chat');
-var censor = require('./censor');
-
-// Global variables
-var socket = io(config.io);
-var joined = false;
-var input = $('.input input');
-var nick;
-var image = $('#game img')[0];
-var lastImage;
-
-// Global functions:
 
 // resize asap before loading other stuff
-function resize() {
+function resize(){
   if ($(window).width() <= 500) {
     $('#chat, #game').css('height', $(window).height() / 2);
     $('.input input').css('width', $(window).width() - 40);
@@ -26,57 +16,16 @@ function resize() {
     $('.input input').css('width', $('.input').width());
     $('.messages').css('height', $('#chat').height() - 70);
   }
+  scrollMessages();
 }
-
-// Allows user to control the game without chat.
-function konamiCode () {
-  var map = {
-    37: 'left',
-    39: 'right',
-    65: 'a',
-    83: 'b',
-    66: 'b',
-    38: 'up',
-    40: 'down',
-    79: 'select',
-    13: 'start'
-  };
-
-  alert('You think you\'re clever huh? You have 5 minutes');
-  console.log('Konami code entered!');
-
-  $(document).on('keydown', function(ev){
-    if (null == nick) return;
-    var code = ev.keyCode;
-    if ($('body').hasClass('input_focus')) return;
-    if (map[code]) {
-      ev.preventDefault();
-      socket.emit('move', map[code]);
-    }
-    window.setTimeout(function () {
-      $(document).on('keydown', function() {});
-    }, 300000);
-  });
-}
-
-// Highlights controls when image or button pressed
-function highlightControls() {
-  $('table.screen-keys td:not(.empty-cell)').addClass('highlight');
-
-  setTimeout(function() {
-    $('table.screen-keys td').removeClass('highlight');
-  }, 300);
-}
-
-// Resize the window right away
 $(window).resize(resize);
 resize();
 
 // reset game img size for mobile now that we loaded
 $('#game img').css('height', '100%');
 
-// Socket.io event listeners
-socket.on('connect', function() {
+var socket = io(config.io);
+socket.on('connect', function(){
   $('body').addClass('ready');
   $('.messages').empty();
   $('.messages').removeClass('connecting');
@@ -85,9 +34,61 @@ socket.on('connect', function() {
   $('.input').addClass('connected');
   $('.input form input').attr('placeholder', 'enter your name to play');
   $('.input form input').attr('disabled', false);
+  message('Connected!');
+  if (window.localStorage && localStorage.nick) {
+    join(localStorage.nick);
+  }
 });
 
-socket.on('joined', function() {
+socket.on('disconnect', function(){
+  message('Disconnected. Reconnecting.');
+});
+
+if ('ontouchstart' in window) {
+  $('body').addClass('touch');
+}
+
+var joined = false;
+var input = $('.input input');
+var nick;
+$('.input form').submit(function(ev){
+  ev.preventDefault();
+  var data = input.val();
+  if ('' === data) return;
+  input.val('');
+  if (joined) {
+    message(data, nick);
+    socket.emit('message', data);
+  } else {
+    join(data);
+  }
+});
+
+function join(data){
+  nick = data;
+  // Try-catch necessary because Safari might have locked setItem causing
+  // exception
+  try {
+    if (window.localStorage) localStorage.nick = data;
+  } catch (e) {}
+  socket.emit('join', data);
+  $('body').addClass('joined');
+  $('.input').addClass('joined');
+  input
+  .attr('placeholder', 'type in to chat')
+  .blur();
+  joined = true;
+}
+
+input.focus(function(){
+  $('body').addClass('input_focus');
+});
+
+input.blur(function(){
+  $('body').removeClass('input_focus');
+});
+
+socket.on('joined', function(){
   $('.messages').append(
     $('<p>').text('You have joined.').append($('<span class="key-info"> Keys are as follows: </span>'))
     .append(
@@ -106,9 +107,54 @@ socket.on('joined', function() {
   );
 
   $('table.unjoined').removeClass('unjoined');
+  scrollMessages();
 });
 
-socket.on('join', function(nick, loc) {
+var map = {
+  37: 'left',
+  39: 'right',
+  65: 'a',
+  83: 'b',
+  66: 'b',
+  38: 'up',
+  40: 'down',
+  79: 'select',
+  13: 'start'
+};
+
+var reverseMap = {};
+for (var i in map) reverseMap[map[i]] = i;
+
+$(document).on('keydown', function(ev){
+  if (null == nick) return;
+  var code = ev.keyCode;
+  if ($('body').hasClass('input_focus')) return;
+  if (map[code]) {
+    ev.preventDefault();
+    socket.emit('move', map[code]);
+  }
+});
+
+// Listener to fire up keyboard events on mobile devices for control overlay
+$('table.screen-keys td').mousedown(function() {
+  var id = $(this).attr('id');
+  var code = reverseMap[id];
+  var e = $.Event('keydown');
+  e.keyCode = code;
+  $(document).trigger(e);
+
+  $(this).addClass('pressed');
+  var self = this;
+  setTimeout(function() {
+    $(self).removeClass('pressed');
+  }, 1000);
+});
+
+socket.on('connections', function(total){
+  $('.count').text(total);
+});
+
+socket.on('join', function(nick, loc){
   var p = $('<p>');
   p.append($('<span class="join-by">').text(nick));
   if (loc) {
@@ -116,15 +162,54 @@ socket.on('join', function(nick, loc) {
   }
   p.append(' joined.');
   $('.messages').append(p);
+  trimMessages();
+  scrollMessages();
 });
 
-socket.on('reload', function() {
-  setTimeout(function() {
+socket.on('move', function(move, by){
+  var p = $('<p class="move">').text(' pressed ' + move);
+  p.prepend($('<span class="move-by">').text(by));
+  $('.messages').append(p);
+  trimMessages();
+  scrollMessages();
+});
+
+socket.on('message', function(msg, by){
+  message(msg, by);
+});
+
+socket.on('reload', function(){
+  setTimeout(function(){
     location.reload();
   }, Math.floor(Math.random() * 10000) + 5000);
 });
 
-socket.on('frame', function(data) {
+function message(msg, by){
+  var p = $('<p>').text(msg);
+  if (by) {
+    p.prepend($('<span class="message-by">').text(by + ': '));
+  } else {
+    p.addClass('server');
+  }
+  $('.messages').append(p);
+  trimMessages();
+  scrollMessages();
+}
+
+function trimMessages(){
+  var messages = $('.messages');
+  while (messages.children().length > 300) {
+    $(messages.children()[0]).remove();
+  }
+}
+
+function scrollMessages(){
+  $('.messages')[0].scrollTop = 10000000;
+}
+
+var image = $('#game img')[0];
+var lastImage;
+socket.on('frame', function(data){
   if (lastImage && 'undefined' != typeof URL) {
     URL.revokeObjectURL(lastImage);
   }
@@ -132,50 +217,14 @@ socket.on('frame', function(data) {
   lastImage = image.src;
 });
 
-input.focus(function() {
-  $('body').addClass('input_focus');
-});
+// Highlights controls when image or button pressed
+function highlightControls() {
+  $('table.screen-keys td:not(.empty-cell)').addClass('highlight');
 
-input.blur(function() {
-  $('body').removeClass('input_focus');
-});
+  setTimeout(function() {
+    $('table.screen-keys td').removeClass('highlight');
+  }, 300);
+}
 
 $('img').mousedown(highlightControls);
 $('table.screen-keys td').mousedown(highlightControls);
-
-$('.input form').submit(function(ev) {
-  // First prevent the form from being submitted
-  ev.preventDefault();
-
-  // Create an array of strings corresponding to GameBoy buttons to test against input
-  var gbButtons = ['left', 'right', 'up', 'down', 'a', 'b', 'start', 'select'];
-  var enteredText = censor(input.val());
-
-  // Do nothing if no text was entered.
-  if ('' === enteredText) {
-    return
-  }
-
-  // Remove the message that was sent from the form input
-  input.val('');
-
-  // Check to see if the user has already joined the chat
-  if (joined) {
-    console.log(enteredText);
-    if (gbButtons.indexOf(enteredText.toLowerCase()) !== -1) {
-      chat.channel.sendMessage(enteredText);
-      socket.emit('move', enteredText);
-    } else if (enteredText.toLowerCase() === 'up up down down left right left right b a start') {
-      // Special surprise.
-      konamiCode();
-      chat.printMessage(nick, 'This player is currently cheating');
-    } else {
-      chat.channel.sendMessage(enteredText);
-    }
-  } else {
-    // If the user hasn't joined, then join using their entered text as a username
-    nick = enteredText;
-    joined = true;
-    chat.join(enteredText);
-  }
-});
